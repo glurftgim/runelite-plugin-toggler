@@ -28,6 +28,17 @@ The **Groups** tab turns several plugins on and off together with one key.
 
 Use **+ Add plugins** to add more, the small **-** to take one out, and **x** to delete the group.
 
+## Knowing what it did
+
+When you press a key, the plugin tells you what it turned on or off, so you're never guessing:
+
+- **Chat message:** for example "Plugin Toggler: Entity Hider turned on." or "Raiding group turned off: Entity Hider,
+  117 HD."
+- **On-screen popup:** a small text for a few seconds, green for ON and red for OFF. Hold **Alt** and drag it where you
+  want it (a "drag me" sample shows while Alt is held).
+
+Both can be switched off, and the popup time changed, in the plugin's settings.
+
 ## Features
 
 - Works with any installed plugin, and does the same thing as clicking its switch in the plugin list, so the plugin's

@@ -2,6 +2,7 @@ package com.plugintoggler;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
+import com.google.inject.Provides;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.event.KeyEvent;
@@ -16,6 +17,10 @@ import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JScrollPane;
 import javax.swing.SwingUtilities;
+import net.runelite.api.ChatMessageType;
+import net.runelite.client.callback.ClientThread;
+import net.runelite.client.chat.ChatMessageManager;
+import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.config.Keybind;
 import net.runelite.client.input.KeyListener;
@@ -25,6 +30,7 @@ import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
+import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.ImageUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,6 +66,27 @@ public class PluginTogglerPlugin extends Plugin
 	@Inject
 	private ConfigManager configManager;
 
+	@Inject
+	private PluginTogglerConfig config;
+
+	@Inject
+	private ClientThread clientThread;
+
+	@Inject
+	private OverlayManager overlayManager;
+
+	@Inject
+	private TogglePopupOverlay popupOverlay;
+
+	@Inject
+	private ChatMessageManager chatMessageManager;
+
+	@Provides
+	PluginTogglerConfig provideConfig(ConfigManager configManager)
+	{
+		return configManager.getConfig(PluginTogglerConfig.class);
+	}
+
 	private final List<Binding> bindings = new ArrayList<>();
 	private final List<Group> groups = new ArrayList<>();
 	private TogglePanel panel;
@@ -81,7 +108,7 @@ public class PluginTogglerPlugin extends Plugin
 				{
 					String name = b.plugin;
 					Component source = e.getComponent();
-					SwingUtilities.invokeLater(() -> toggleNames(List.of(name), source));
+					SwingUtilities.invokeLater(() -> toggleNames(List.of(name), null, source));
 					return;
 				}
 			}
@@ -90,8 +117,9 @@ public class PluginTogglerPlugin extends Plugin
 				if (pressed(g, e))
 				{
 					List<String> members = new ArrayList<>(g.plugins);
+					String groupName = g.plugin;
 					Component source = e.getComponent();
-					SwingUtilities.invokeLater(() -> toggleNames(members, source));
+					SwingUtilities.invokeLater(() -> toggleNames(members, groupName, source));
 					return;
 				}
 			}
@@ -129,6 +157,7 @@ public class PluginTogglerPlugin extends Plugin
 			.panel(panel)
 			.build();
 		clientToolbar.addNavigation(navButton);
+		overlayManager.add(popupOverlay);
 		keyManager.registerKeyListener(keyListener);
 	}
 
@@ -136,6 +165,7 @@ public class PluginTogglerPlugin extends Plugin
 	protected void shutDown()
 	{
 		keyManager.unregisterKeyListener(keyListener);
+		overlayManager.remove(popupOverlay);
 		clientToolbar.removeNavigation(navButton);
 		panel = null;
 		navButton = null;
@@ -288,9 +318,11 @@ public class PluginTogglerPlugin extends Plugin
 	 * Flips the named plugins together: if any of them is on they all go off, otherwise they
 	 * all go on. For a single plugin that is a plain on/off toggle.
 	 */
-	private void toggleNames(List<String> names, Component source)
+	private void toggleNames(List<String> names, String groupName, Component source)
 	{
 		List<Plugin> targets = new ArrayList<>();
+		List<String> missing = new ArrayList<>();
+		List<String> failed = new ArrayList<>();
 		for (String name : names)
 		{
 			Plugin p = pluginManager.getPlugins().stream()
@@ -300,6 +332,7 @@ public class PluginTogglerPlugin extends Plugin
 			if (p == null)
 			{
 				log.warn("Plugin not found: {}", name);
+				missing.add(name);
 			}
 			else
 			{
@@ -308,6 +341,8 @@ public class PluginTogglerPlugin extends Plugin
 		}
 		if (targets.isEmpty())
 		{
+			say(groupName == null ? "couldn't find " + String.join(", ", missing)
+				: groupName + " group has no plugins to toggle.", null, false);
 			return;
 		}
 
@@ -315,6 +350,7 @@ public class PluginTogglerPlugin extends Plugin
 		// search box. After toggling, hand focus back to where the key press came from (the game).
 
 		boolean enable = targets.stream().noneMatch(pluginManager::isPluginEnabled);
+		List<String> changed = new ArrayList<>();
 		for (Plugin target : targets)
 		{
 			if (pluginManager.isPluginEnabled(target) == enable)
@@ -332,17 +368,68 @@ public class PluginTogglerPlugin extends Plugin
 				{
 					pluginManager.stopPlugin(target);
 				}
+				changed.add(target.getName());
 			}
 			catch (Exception e)
 			{
 				log.warn("Could not toggle {}", target.getName(), e);
+				failed.add(target.getName());
 			}
 		}
+
+		String state = enable ? "on" : "off";
+		StringBuilder msg = new StringBuilder();
+		if (groupName == null)
+		{
+			if (!changed.isEmpty())
+			{
+				msg.append(changed.get(0)).append(" turned ").append(state).append(".");
+			}
+		}
+		else
+		{
+			msg.append(groupName).append(" group turned ").append(state);
+			msg.append(changed.isEmpty() ? "." : ": " + String.join(", ", changed) + ".");
+		}
+		if (!failed.isEmpty())
+		{
+			msg.append(" Couldn't toggle ").append(String.join(", ", failed)).append(".");
+		}
+		if (!missing.isEmpty())
+		{
+			msg.append(" Couldn't find ").append(String.join(", ", missing)).append(".");
+		}
+		// short text for the on-screen popup: "Entity Hider ON" or "Raiding group OFF (3)"
+		String popupText = null;
+		if (!changed.isEmpty())
+		{
+			String word = enable ? "ON" : "OFF";
+			popupText = groupName == null ? changed.get(0) + " " + word
+				: groupName + " group " + word + " (" + changed.size() + ")";
+		}
+		say(msg.toString().trim(), popupText, enable);
 
 		if (source != null)
 		{
 			source.requestFocusInWindow();
 			SwingUtilities.invokeLater(source::requestFocusInWindow);
 		}
+	}
+
+	/** Tells the player what happened: in the game chat and/or in the on-screen popup, per the settings. */
+	private void say(String chatText, String popupText, boolean enabled)
+	{
+		if (popupText != null && config.popup())
+		{
+			popupOverlay.show(popupText, enabled);
+		}
+		if (chatText.isEmpty() || !config.chatMessages())
+		{
+			return;
+		}
+		clientThread.invokeLater(() -> chatMessageManager.queue(QueuedMessage.builder()
+			.type(ChatMessageType.CONSOLE)
+			.runeLiteFormattedMessage("Plugin Toggler: " + chatText)
+			.build()));
 	}
 }
