@@ -21,12 +21,13 @@ import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.SwingUtilities;
 import net.runelite.api.ChatMessageType;
+import net.runelite.api.Client;
+import net.runelite.api.GameState;
 import net.runelite.client.callback.ClientThread;
-import net.runelite.client.chat.ChatMessageManager;
-import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.config.Keybind;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.ClientShutdown;
 import net.runelite.client.events.PluginChanged;
 import net.runelite.client.input.KeyListener;
 import net.runelite.client.input.KeyManager;
@@ -55,6 +56,14 @@ public class PluginTogglerPlugin extends Plugin
 	private static final String CONFIG_GROUP = "plugintoggler";
 	private static final String BINDINGS_KEY = "bindings";
 	private static final String GROUPS_KEY = "groups";
+	private static final String TEMP_ON_KEY = "tempEnabled";
+
+	/**
+	 * Plugins that are switched off in RuneLite's plugin list but that a session-only key turned on.
+	 * Their saved setting is put back to off when they are turned off again, on shutdown, or (if
+	 * RuneLite never got the chance) the next time this plugin starts.
+	 */
+	private final Set<String> tempEnabled = new TreeSet<>();
 
 	/** The text form of everything, used by Export and Import. */
 	static class Backup
@@ -85,7 +94,7 @@ public class PluginTogglerPlugin extends Plugin
 	private ClientThread clientThread;
 
 	@Inject
-	private ChatMessageManager chatMessageManager;
+	private Client client;
 
 	@Inject
 	private OverlayManager overlayManager;
@@ -174,6 +183,7 @@ public class PluginTogglerPlugin extends Plugin
 	protected void startUp()
 	{
 		load();
+		restoreTempEnabled(true);
 		panel = new TogglePanel(this);
 		panel.rebuild(bindings, groups);
 
@@ -192,11 +202,78 @@ public class PluginTogglerPlugin extends Plugin
 	@Override
 	protected void shutDown()
 	{
+		restoreTempEnabled(false);
 		keyManager.unregisterKeyListener(keyListener);
 		overlayManager.remove(popupOverlay);
 		clientToolbar.removeNavigation(navButton);
 		panel = null;
 		navButton = null;
+	}
+
+	@Subscribe
+	public void onClientShutdown(ClientShutdown event)
+	{
+		restoreTempEnabled(false);
+	}
+
+	private void saveTempEnabled()
+	{
+		if (tempEnabled.isEmpty())
+		{
+			configManager.unsetConfiguration(CONFIG_GROUP, TEMP_ON_KEY);
+		}
+		else
+		{
+			configManager.setConfiguration(CONFIG_GROUP, TEMP_ON_KEY, gson.toJson(tempEnabled));
+		}
+	}
+
+	/**
+	 * Puts plugins that were only switched on for this session back to off in RuneLite's saved settings.
+	 * With {@code fromLastRun} it reads the list left behind by a run that ended without cleaning up.
+	 */
+	private void restoreTempEnabled(boolean fromLastRun)
+	{
+		if (fromLastRun)
+		{
+			String json = configManager.getConfiguration(CONFIG_GROUP, TEMP_ON_KEY);
+			if (json != null)
+			{
+				try
+				{
+					List<String> left = gson.fromJson(json, new TypeToken<List<String>>(){}.getType());
+					if (left != null)
+					{
+						tempEnabled.addAll(left);
+					}
+				}
+				catch (RuntimeException e)
+				{
+					log.warn("Could not read {}", TEMP_ON_KEY, e);
+				}
+			}
+		}
+		for (String name : new ArrayList<>(tempEnabled))
+		{
+			Plugin p = find(name);
+			if (p != null)
+			{
+				try
+				{
+					pluginManager.setPluginEnabled(p, false);
+					if (fromLastRun && pluginManager.isPluginActive(p))
+					{
+						pluginManager.stopPlugin(p);
+					}
+				}
+				catch (Exception e)
+				{
+					log.warn("Could not restore {}", name, e);
+				}
+			}
+		}
+		tempEnabled.clear();
+		saveTempEnabled();
 	}
 
 	@Subscribe
@@ -511,7 +588,6 @@ public class PluginTogglerPlugin extends Plugin
 		List<Plugin> targets = new ArrayList<>();
 		List<String> missing = new ArrayList<>();
 		List<String> failed = new ArrayList<>();
-		List<String> blocked = new ArrayList<>();
 		for (String name : names)
 		{
 			Plugin p = find(name);
@@ -540,12 +616,6 @@ public class PluginTogglerPlugin extends Plugin
 			{
 				continue;
 			}
-			if (sessionOnly && enable && !pluginManager.isPluginEnabled(target))
-			{
-				// RuneLite won't start a plugin that is switched off in its plugin list
-				blocked.add(target.getName());
-				continue;
-			}
 			if (setEnabled(target, enable, sessionOnly))
 			{
 				changed.add(target.getName());
@@ -571,11 +641,6 @@ public class PluginTogglerPlugin extends Plugin
 			msg.append(groupName).append(" group turned ").append(state).append(forNow);
 			msg.append(changed.isEmpty() ? "." : ": " + String.join(", ", changed) + ".");
 		}
-		if (!blocked.isEmpty())
-		{
-			msg.append(" ").append(String.join(", ", blocked))
-				.append(" is switched off in the plugin list, so it can't be turned on for this session only.");
-		}
 		if (!failed.isEmpty())
 		{
 			msg.append(" Couldn't toggle ").append(String.join(", ", failed)).append(".");
@@ -600,9 +665,19 @@ public class PluginTogglerPlugin extends Plugin
 	{
 		try
 		{
+			String name = target.getName();
 			if (!sessionOnly)
 			{
 				pluginManager.setPluginEnabled(target, enable);
+				tempEnabled.remove(name);
+			}
+			else if (enable && !pluginManager.isPluginEnabled(target))
+			{
+				// RuneLite only starts a plugin that is switched on in its list, so flip it on for now
+				// and put it back to off when it is turned off again or RuneLite closes
+				pluginManager.setPluginEnabled(target, true);
+				tempEnabled.add(name);
+				saveTempEnabled();
 			}
 			if (enable)
 			{
@@ -611,6 +686,11 @@ public class PluginTogglerPlugin extends Plugin
 			else
 			{
 				pluginManager.stopPlugin(target);
+				if (sessionOnly && tempEnabled.remove(name))
+				{
+					pluginManager.setPluginEnabled(target, false);
+					saveTempEnabled();
+				}
 			}
 			return true;
 		}
@@ -645,9 +725,13 @@ public class PluginTogglerPlugin extends Plugin
 		{
 			return;
 		}
-		clientThread.invokeLater(() -> chatMessageManager.queue(QueuedMessage.builder()
-			.type(ChatMessageType.CONSOLE)
-			.runeLiteFormattedMessage("Plugin Toggler: " + chatText)
-			.build()));
+		// a plain game message, so RuneLite's chat stacks repeats as "(2)", "(3)" like other plugins' messages
+		clientThread.invokeLater(() ->
+		{
+			if (client.getGameState() == GameState.LOGGED_IN)
+			{
+				client.addChatMessage(ChatMessageType.GAMEMESSAGE, "", "Plugin Toggler: " + chatText, null);
+			}
+		});
 	}
 }

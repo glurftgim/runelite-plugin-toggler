@@ -35,7 +35,8 @@ Each entry has a setting for what happens to the plugin's on/off state:
 - **Remember across sessions** (the default): the plugin is switched on or off in RuneLite and kept that way. Turn
   Entity Hider off with your key before a raid, log out, come back later, and it is still off.
 - **This session only:** the plugin is only stopped or started for now, and reverts to the way RuneLite has it saved
-  after a restart. A plugin that is switched off in the plugin list can't be turned on this way.
+  after a restart. A plugin that is switched off in the plugin list is switched on for now and put back to off when you
+  turn it off again or close RuneLite.
 
 ## Each entry
 
