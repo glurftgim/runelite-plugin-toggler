@@ -4,7 +4,6 @@ import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import java.awt.Component;
 import java.awt.Dimension;
-import java.awt.KeyboardFocusManager;
 import java.awt.event.KeyEvent;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
@@ -81,7 +80,8 @@ public class PluginTogglerPlugin extends Plugin
 				if (pressed(b, e))
 				{
 					String name = b.plugin;
-					SwingUtilities.invokeLater(() -> toggleNames(List.of(name)));
+					Component source = e.getComponent();
+					SwingUtilities.invokeLater(() -> toggleNames(List.of(name), source));
 					return;
 				}
 			}
@@ -90,7 +90,8 @@ public class PluginTogglerPlugin extends Plugin
 				if (pressed(g, e))
 				{
 					List<String> members = new ArrayList<>(g.plugins);
-					SwingUtilities.invokeLater(() -> toggleNames(members));
+					Component source = e.getComponent();
+					SwingUtilities.invokeLater(() -> toggleNames(members, source));
 					return;
 				}
 			}
@@ -287,7 +288,7 @@ public class PluginTogglerPlugin extends Plugin
 	 * Flips the named plugins together: if any of them is on they all go off, otherwise they
 	 * all go on. For a single plugin that is a plain on/off toggle.
 	 */
-	private void toggleNames(List<String> names)
+	private void toggleNames(List<String> names, Component source)
 	{
 		List<Plugin> targets = new ArrayList<>();
 		for (String name : names)
@@ -311,8 +312,7 @@ public class PluginTogglerPlugin extends Plugin
 		}
 
 		// Starting or stopping a plugin makes RuneLite's plugin list grab focus for its
-		// search box. Remember where focus was (the game) and put it back afterwards.
-		Component focused = KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner();
+		// search box. After toggling, hand focus back to where the key press came from (the game).
 
 		boolean enable = targets.stream().noneMatch(pluginManager::isPluginEnabled);
 		for (Plugin target : targets)
@@ -339,10 +339,10 @@ public class PluginTogglerPlugin extends Plugin
 			}
 		}
 
-		if (focused != null)
+		if (source != null)
 		{
-			focused.requestFocusInWindow();
-			SwingUtilities.invokeLater(focused::requestFocusInWindow);
+			source.requestFocusInWindow();
+			SwingUtilities.invokeLater(source::requestFocusInWindow);
 		}
 	}
 }
