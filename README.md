@@ -50,7 +50,7 @@ back them up or move them to another computer.
 When you press a key, the plugin tells you what it turned on or off, so you're never guessing:
 
 - **Chat message:** for example "Plugin Toggler: Entity Hider turned on." or "Raiding group turned off: Entity Hider,
-  117 HD."
+  117 HD." Repeats stack in the chat box as (2), (3) and so on, like other plugins' messages.
 - **On-screen popup:** a small text for a few seconds, green for ON and red for OFF. Hold **Alt** and drag it where you
   want it (a "drag me" sample shows while Alt is held).
 
