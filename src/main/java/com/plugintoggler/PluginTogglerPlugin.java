@@ -3,19 +3,22 @@ package com.plugintoggler;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.google.inject.Provides;
+import java.awt.BorderLayout;
 import java.awt.Component;
-import java.awt.Dimension;
 import java.awt.event.KeyEvent;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 import javax.inject.Inject;
-import javax.swing.JList;
+import javax.swing.JLabel;
 import javax.swing.JOptionPane;
+import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
 import javax.swing.SwingUtilities;
 import net.runelite.api.ChatMessageType;
 import net.runelite.client.callback.ClientThread;
@@ -23,6 +26,8 @@ import net.runelite.client.chat.ChatMessageManager;
 import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.config.Keybind;
+import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.PluginChanged;
 import net.runelite.client.input.KeyListener;
 import net.runelite.client.input.KeyManager;
 import net.runelite.client.plugins.Plugin;
@@ -51,6 +56,13 @@ public class PluginTogglerPlugin extends Plugin
 	private static final String BINDINGS_KEY = "bindings";
 	private static final String GROUPS_KEY = "groups";
 
+	/** The text form of everything, used by Export and Import. */
+	static class Backup
+	{
+		List<Binding> bindings;
+		List<Group> groups;
+	}
+
 	@Inject
 	private Gson gson;
 
@@ -73,13 +85,13 @@ public class PluginTogglerPlugin extends Plugin
 	private ClientThread clientThread;
 
 	@Inject
+	private ChatMessageManager chatMessageManager;
+
+	@Inject
 	private OverlayManager overlayManager;
 
 	@Inject
 	private TogglePopupOverlay popupOverlay;
-
-	@Inject
-	private ChatMessageManager chatMessageManager;
 
 	@Provides
 	PluginTogglerConfig provideConfig(ConfigManager configManager)
@@ -102,27 +114,17 @@ public class PluginTogglerPlugin extends Plugin
 		@Override
 		public void keyPressed(KeyEvent e)
 		{
-			for (Binding b : bindings)
+			Binding b = pressedEntry(e);
+			if (b == null)
 			{
-				if (pressed(b, e))
-				{
-					String name = b.plugin;
-					Component source = e.getComponent();
-					SwingUtilities.invokeLater(() -> toggleNames(List.of(name), null, source));
-					return;
-				}
+				return;
 			}
-			for (Group g : groups)
-			{
-				if (pressed(g, e))
-				{
-					List<String> members = new ArrayList<>(g.plugins);
-					String groupName = g.plugin;
-					Component source = e.getComponent();
-					SwingUtilities.invokeLater(() -> toggleNames(members, groupName, source));
-					return;
-				}
-			}
+			e.consume();
+			List<String> names = namesOf(b);
+			String label = labelOf(b);
+			boolean sessionOnly = b.sessionOnly;
+			Component source = e.getComponent();
+			SwingUtilities.invokeLater(() -> toggleNames(names, label, sessionOnly, source));
 		}
 
 		@Override
@@ -131,15 +133,41 @@ public class PluginTogglerPlugin extends Plugin
 		}
 	};
 
-	private static boolean pressed(Binding b, KeyEvent e)
+	private static boolean matches(Binding b, KeyEvent e)
 	{
 		Keybind k = b.keybind();
-		if (Keybind.NOT_SET.equals(k) || !k.matches(e))
+		return !b.paused && !Keybind.NOT_SET.equals(k) && k.matches(e);
+	}
+
+	/** The entry whose key this is, if any. Single plugins win over groups. */
+	private Binding pressedEntry(KeyEvent e)
+	{
+		for (Binding b : bindings)
 		{
-			return false;
+			if (matches(b, e))
+			{
+				return b;
+			}
 		}
-		e.consume();
-		return true;
+		for (Group g : groups)
+		{
+			if (matches(g, e))
+			{
+				return g;
+			}
+		}
+		return null;
+	}
+
+	private static List<String> namesOf(Binding b)
+	{
+		return b instanceof Group ? new ArrayList<>(((Group) b).plugins) : List.of(b.plugin);
+	}
+
+	/** The group's name, or null for a single plugin. */
+	private static String labelOf(Binding b)
+	{
+		return b instanceof Group ? b.plugin : null;
 	}
 
 	@Override
@@ -171,6 +199,18 @@ public class PluginTogglerPlugin extends Plugin
 		navButton = null;
 	}
 
+	@Subscribe
+	public void onPluginChanged(PluginChanged event)
+	{
+		SwingUtilities.invokeLater(() ->
+		{
+			if (panel != null)
+			{
+				panel.refreshStates();
+			}
+		});
+	}
+
 	/** Names of installed plugins that can be toggled, minus the ones in {@code exclude}. */
 	private Set<String> availableNames(Collection<String> exclude)
 	{
@@ -187,7 +227,15 @@ public class PluginTogglerPlugin extends Plugin
 		return names;
 	}
 
-	// ---- single plugins ----
+	private Plugin find(String name)
+	{
+		return pluginManager.getPlugins().stream()
+			.filter(x -> x.getName().equals(name))
+			.findFirst()
+			.orElse(null);
+	}
+
+	// ---- editing the lists (all called from the panel, on the Swing thread) ----
 
 	void promptAddBinding()
 	{
@@ -198,22 +246,13 @@ public class PluginTogglerPlugin extends Plugin
 		{
 			return;
 		}
-		Object choice = JOptionPane.showInputDialog(panel, "Which plugin?", "Add plugin hotkey",
-			JOptionPane.PLAIN_MESSAGE, null, names.toArray(), names.iterator().next());
-		if (choice != null)
+		List<String> picked = PluginPicker.pick(panel, "Add plugin hotkey", names, false);
+		if (!picked.isEmpty())
 		{
-			bindings.add(new Binding((String) choice));
+			bindings.add(new Binding(picked.get(0)));
 			changed();
 		}
 	}
-
-	void removeBinding(Binding b)
-	{
-		bindings.remove(b);
-		changed();
-	}
-
-	// ---- groups ----
 
 	void promptAddGroup()
 	{
@@ -236,14 +275,10 @@ public class PluginTogglerPlugin extends Plugin
 		{
 			return;
 		}
-		JList<String> list = new JList<>(names.toArray(new String[0]));
-		JScrollPane scroll = new JScrollPane(list);
-		scroll.setPreferredSize(new Dimension(260, 260));
-		int result = JOptionPane.showConfirmDialog(panel, scroll, "Add plugins to " + g.plugin,
-			JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-		if (result == JOptionPane.OK_OPTION && !list.getSelectedValuesList().isEmpty())
+		List<String> picked = PluginPicker.pick(panel, "Add plugins to " + g.plugin, names, true);
+		if (!picked.isEmpty())
 		{
-			g.plugins.addAll(list.getSelectedValuesList());
+			g.plugins.addAll(picked);
 			changed();
 		}
 	}
@@ -254,10 +289,147 @@ public class PluginTogglerPlugin extends Plugin
 		changed();
 	}
 
-	void removeGroup(Group g)
+	void removeEntry(Binding b)
 	{
-		groups.remove(g);
+		if (b instanceof Group)
+		{
+			groups.remove(b);
+		}
+		else
+		{
+			bindings.remove(b);
+		}
 		changed();
+	}
+
+	void moveEntry(Binding b, int delta)
+	{
+		List<? extends Binding> list = b instanceof Group ? groups : bindings;
+		int from = list.indexOf(b);
+		int to = from + delta;
+		if (from < 0 || to < 0 || to >= list.size())
+		{
+			return;
+		}
+		Collections.swap(list, from, to);
+		changed();
+	}
+
+	void setSessionOnly(Binding b, boolean sessionOnly)
+	{
+		b.sessionOnly = sessionOnly;
+		saveAll();
+	}
+
+	/**
+	 * The ON/OFF switch on a row. ON turns the plugin(s) on and lets the key work; OFF turns them
+	 * off and makes the key do nothing.
+	 */
+	void setEntryOn(Binding b, boolean on)
+	{
+		b.paused = !on;
+		saveAll();
+		toggleNames(namesOf(b), labelOf(b), b.sessionOnly, on, null);
+		changed();
+	}
+
+	/** 1 all on, 0 all off, 2 some on, -1 none of its plugins are installed. */
+	int stateOf(Binding b)
+	{
+		int on = 0;
+		int total = 0;
+		for (String name : namesOf(b))
+		{
+			Plugin p = find(name);
+			if (p == null)
+			{
+				continue;
+			}
+			total++;
+			if (pluginManager.isPluginActive(p))
+			{
+				on++;
+			}
+		}
+		return total == 0 ? -1 : on == 0 ? 0 : on == total ? 1 : 2;
+	}
+
+	// ---- export and import ----
+
+	void exportDialog()
+	{
+		Backup backup = new Backup();
+		backup.bindings = bindings;
+		backup.groups = groups;
+		JTextArea area = new JTextArea(gson.toJson(backup), 10, 28);
+		area.setLineWrap(true);
+		area.setEditable(false);
+		area.selectAll();
+		JPanel body = new JPanel(new BorderLayout(0, 6));
+		body.add(new JLabel("Copy this text (Ctrl+C) and keep it somewhere safe."), BorderLayout.NORTH);
+		body.add(new JScrollPane(area), BorderLayout.CENTER);
+		JOptionPane.showMessageDialog(panel, body, "Export hotkeys", JOptionPane.PLAIN_MESSAGE);
+	}
+
+	void importDialog()
+	{
+		JTextArea area = new JTextArea(10, 28);
+		area.setLineWrap(true);
+		JPanel body = new JPanel(new BorderLayout(0, 6));
+		body.add(new JLabel("<html>Paste exported text below.<br>This replaces your current hotkeys and groups.</html>"),
+			BorderLayout.NORTH);
+		body.add(new JScrollPane(area), BorderLayout.CENTER);
+		int result = JOptionPane.showConfirmDialog(panel, body, "Import hotkeys", JOptionPane.OK_CANCEL_OPTION,
+			JOptionPane.PLAIN_MESSAGE);
+		if (result != JOptionPane.OK_OPTION)
+		{
+			return;
+		}
+
+		try
+		{
+			Backup backup = gson.fromJson(area.getText().trim(), Backup.class);
+			if (backup == null)
+			{
+				throw new IllegalArgumentException("empty");
+			}
+			List<Binding> newBindings = new ArrayList<>();
+			if (backup.bindings != null)
+			{
+				for (Binding b : backup.bindings)
+				{
+					if (b != null && b.plugin != null)
+					{
+						newBindings.add(b);
+					}
+				}
+			}
+			List<Group> newGroups = new ArrayList<>();
+			if (backup.groups != null)
+			{
+				for (Group g : backup.groups)
+				{
+					if (g != null && g.plugin != null)
+					{
+						if (g.plugins == null)
+						{
+							g.plugins = new ArrayList<>();
+						}
+						newGroups.add(g);
+					}
+				}
+			}
+			bindings.clear();
+			bindings.addAll(newBindings);
+			groups.clear();
+			groups.addAll(newGroups);
+			changed();
+		}
+		catch (Exception e)
+		{
+			JOptionPane.showMessageDialog(panel, "That doesn't look like exported hotkeys.", "Import failed",
+				JOptionPane.ERROR_MESSAGE);
+		}
 	}
 
 	// ---- saving ----
@@ -302,6 +474,13 @@ public class PluginTogglerPlugin extends Plugin
 				}.getType());
 				if (loaded != null)
 				{
+					for (Group g : loaded)
+					{
+						if (g.plugins == null)
+						{
+							g.plugins = new ArrayList<>();
+						}
+					}
 					groups.addAll(loaded);
 				}
 			}
@@ -316,19 +495,26 @@ public class PluginTogglerPlugin extends Plugin
 
 	/**
 	 * Flips the named plugins together: if any of them is on they all go off, otherwise they
-	 * all go on. For a single plugin that is a plain on/off toggle.
+	 * all go on. For a single plugin that is a plain on/off toggle. Unless {@code sessionOnly}, the
+	 * result is saved in RuneLite so it is the same next session; with it, plugins are only stopped
+	 * or started for now (so one switched off in the plugin list can't be turned on this way).
 	 */
-	private void toggleNames(List<String> names, String groupName, Component source)
+	private void toggleNames(List<String> names, String groupName, boolean sessionOnly, Component source)
+	{
+		toggleNames(names, groupName, sessionOnly, null, source);
+	}
+
+	/** As above, but with {@code forced} set the plugins are all put in that state instead of flipped. */
+	private void toggleNames(List<String> names, String groupName, boolean sessionOnly, Boolean forced,
+		Component source)
 	{
 		List<Plugin> targets = new ArrayList<>();
 		List<String> missing = new ArrayList<>();
 		List<String> failed = new ArrayList<>();
+		List<String> blocked = new ArrayList<>();
 		for (String name : names)
 		{
-			Plugin p = pluginManager.getPlugins().stream()
-				.filter(x -> x.getName().equals(name))
-				.findFirst()
-				.orElse(null);
+			Plugin p = find(name);
 			if (p == null)
 			{
 				log.warn("Plugin not found: {}", name);
@@ -346,50 +532,49 @@ public class PluginTogglerPlugin extends Plugin
 			return;
 		}
 
-		// Starting or stopping a plugin makes RuneLite's plugin list grab focus for its
-		// search box. After toggling, hand focus back to where the key press came from (the game).
-
-		boolean enable = targets.stream().noneMatch(pluginManager::isPluginEnabled);
+		boolean enable = forced != null ? forced : targets.stream().noneMatch(pluginManager::isPluginActive);
 		List<String> changed = new ArrayList<>();
 		for (Plugin target : targets)
 		{
-			if (pluginManager.isPluginEnabled(target) == enable)
+			if (pluginManager.isPluginActive(target) == enable)
 			{
 				continue;
 			}
-			try
+			if (sessionOnly && enable && !pluginManager.isPluginEnabled(target))
 			{
-				pluginManager.setPluginEnabled(target, enable);
-				if (enable)
-				{
-					pluginManager.startPlugin(target);
-				}
-				else
-				{
-					pluginManager.stopPlugin(target);
-				}
+				// RuneLite won't start a plugin that is switched off in its plugin list
+				blocked.add(target.getName());
+				continue;
+			}
+			if (setEnabled(target, enable, sessionOnly))
+			{
 				changed.add(target.getName());
 			}
-			catch (Exception e)
+			else
 			{
-				log.warn("Could not toggle {}", target.getName(), e);
 				failed.add(target.getName());
 			}
 		}
 
 		String state = enable ? "on" : "off";
+		String forNow = sessionOnly ? " (this session only)" : "";
 		StringBuilder msg = new StringBuilder();
 		if (groupName == null)
 		{
 			if (!changed.isEmpty())
 			{
-				msg.append(changed.get(0)).append(" turned ").append(state).append(".");
+				msg.append(changed.get(0)).append(" turned ").append(state).append(forNow).append(".");
 			}
 		}
 		else
 		{
-			msg.append(groupName).append(" group turned ").append(state);
+			msg.append(groupName).append(" group turned ").append(state).append(forNow);
 			msg.append(changed.isEmpty() ? "." : ": " + String.join(", ", changed) + ".");
+		}
+		if (!blocked.isEmpty())
+		{
+			msg.append(" ").append(String.join(", ", blocked))
+				.append(" is switched off in the plugin list, so it can't be turned on for this session only.");
 		}
 		if (!failed.isEmpty())
 		{
@@ -408,7 +593,40 @@ public class PluginTogglerPlugin extends Plugin
 				: groupName + " group " + word + " (" + changed.size() + ")";
 		}
 		say(msg.toString().trim(), popupText, enable);
+		refocus(source);
+	}
 
+	private boolean setEnabled(Plugin target, boolean enable, boolean sessionOnly)
+	{
+		try
+		{
+			if (!sessionOnly)
+			{
+				pluginManager.setPluginEnabled(target, enable);
+			}
+			if (enable)
+			{
+				pluginManager.startPlugin(target);
+			}
+			else
+			{
+				pluginManager.stopPlugin(target);
+			}
+			return true;
+		}
+		catch (Exception e)
+		{
+			log.warn("Could not toggle {}", target.getName(), e);
+			return false;
+		}
+	}
+
+	/**
+	 * Starting or stopping a plugin makes RuneLite's plugin list grab focus for its search box.
+	 * Hand focus back to where the key press came from (the game).
+	 */
+	private static void refocus(Component source)
+	{
 		if (source != null)
 		{
 			source.requestFocusInWindow();

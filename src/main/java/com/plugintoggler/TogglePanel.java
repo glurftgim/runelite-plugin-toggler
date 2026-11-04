@@ -4,15 +4,19 @@ import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.GridLayout;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.util.ArrayList;
 import java.util.List;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
+import javax.swing.JComboBox;
+import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
@@ -24,15 +28,23 @@ import net.runelite.client.ui.PluginPanel;
 /** Side panel with two tabs: single plugins, and groups of plugins. Each gets a key. */
 class TogglePanel extends PluginPanel
 {
+	private static final Color ON = new Color(0x5fe08a);
+	private static final Color OFF = new Color(0xff6b6b);
+	private static final Color MIXED = new Color(0xf5c542);
+	private static final String REMEMBER = "Remember across sessions";
+	private static final String SESSION_ONLY = "This session only";
+
 	private final PluginTogglerPlugin plugin;
 	private final JPanel pluginRows = column();
 	private final JPanel groupRows = column();
+	/** One refresher per visible row, run whenever a plugin starts or stops. */
+	private final List<Runnable> stateUpdaters = new ArrayList<>();
 
 	TogglePanel(PluginTogglerPlugin plugin)
 	{
 		super(false);
 		this.plugin = plugin;
-		setLayout(new BorderLayout());
+		setLayout(new BorderLayout(0, 6));
 		setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
 		JTabbedPane tabs = new JTabbedPane();
@@ -41,6 +53,20 @@ class TogglePanel extends PluginPanel
 		tabs.addTab("Groups", tab("Plugin groups", "Make a group of plugins with one key",
 			plugin::promptAddGroup, groupRows));
 		add(tabs, BorderLayout.CENTER);
+
+		JButton export = new JButton("Export");
+		export.setToolTipText("Copy your hotkeys and groups as text");
+		export.setFocusable(false);
+		export.addActionListener(e -> plugin.exportDialog());
+		JButton importer = new JButton("Import");
+		importer.setToolTipText("Paste exported text to replace your hotkeys and groups");
+		importer.setFocusable(false);
+		importer.addActionListener(e -> plugin.importDialog());
+		JPanel bar = new JPanel(new GridLayout(1, 2, 6, 0));
+		bar.setOpaque(false);
+		bar.add(export);
+		bar.add(importer);
+		add(bar, BorderLayout.SOUTH);
 	}
 
 	private static JPanel column()
@@ -83,22 +109,32 @@ class TogglePanel extends PluginPanel
 
 	void rebuild(List<Binding> bindings, List<Group> groups)
 	{
+		stateUpdaters.clear();
 		fill(pluginRows, bindings.size(), "Click + to add a plugin.");
 		for (Binding b : bindings)
 		{
-			pluginRows.add(pluginRow(b));
+			pluginRows.add(entryCard(b, null));
 			pluginRows.add(Box.createRigidArea(new Dimension(0, 6)));
 		}
 		fill(groupRows, groups.size(), "Click + to make a group.");
 		for (Group g : groups)
 		{
-			groupRows.add(groupRow(g));
+			groupRows.add(entryCard(g, memberList(g)));
 			groupRows.add(Box.createRigidArea(new Dimension(0, 6)));
 		}
 		for (JPanel p : new JPanel[]{pluginRows, groupRows})
 		{
 			p.revalidate();
 			p.repaint();
+		}
+	}
+
+	/** Re-reads which plugins are on, to recolor the dots. Called when any plugin starts or stops. */
+	void refreshStates()
+	{
+		for (Runnable r : new ArrayList<>(stateUpdaters))
+		{
+			r.run();
 		}
 	}
 
@@ -113,33 +149,70 @@ class TogglePanel extends PluginPanel
 		}
 	}
 
-	private JPanel card()
+	/** One card: dot and name with move/delete buttons, the middle part, the key, and the options. */
+	private JPanel entryCard(Binding b, JComponent middle)
 	{
-		JPanel card = new JPanel(new BorderLayout(6, 4));
+		JPanel card = new JPanel(new BorderLayout(6, 6));
 		card.setBackground(ColorScheme.DARKER_GRAY_COLOR);
 		card.setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8));
+
+		JLabel dot = new JLabel("●");
+		Runnable update = () ->
+		{
+			int state = plugin.stateOf(b);
+			dot.setForeground(state == 1 ? ON : state == 0 ? OFF : state == 2 ? MIXED : Color.GRAY);
+			dot.setToolTipText(state == 1 ? "On" : state == 0 ? "Off" : state == 2 ? "Some are on" : "Not installed");
+		};
+		stateUpdaters.add(update);
+		update.run();
+
+		JLabel name = new JLabel(b.plugin);
+		name.setForeground(b.paused ? Color.GRAY : Color.WHITE);
+		name.setToolTipText(b.paused ? "Off: its key does nothing" : null);
+
+		JPanel title = new JPanel(new BorderLayout(6, 0));
+		title.setOpaque(false);
+		title.add(dot, BorderLayout.WEST);
+		title.add(name, BorderLayout.CENTER);
+
+		JPanel tools = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+		tools.setOpaque(false);
+		tools.add(new IconButton(IconButton.Kind.UP, "Move up", () -> plugin.moveEntry(b, -1)));
+		tools.add(new IconButton(IconButton.Kind.DOWN, "Move down", () -> plugin.moveEntry(b, 1)));
+		tools.add(new IconButton(IconButton.Kind.CLOSE, b instanceof Group ? "Delete group" : "Remove",
+			() -> plugin.removeEntry(b)));
+
+		JPanel top = new JPanel(new BorderLayout(4, 0));
+		top.setOpaque(false);
+		top.add(title, BorderLayout.CENTER);
+		top.add(tools, BorderLayout.EAST);
+
+		JPanel body = column();
+		if (middle != null)
+		{
+			body.add(left(middle));
+			body.add(Box.createRigidArea(new Dimension(0, 6)));
+		}
+		body.add(left(keyRow(b)));
+		body.add(Box.createRigidArea(new Dimension(0, 4)));
+		body.add(left(options(b)));
+
+		card.add(top, BorderLayout.NORTH);
+		card.add(body, BorderLayout.CENTER);
+		card.setMaximumSize(new Dimension(Integer.MAX_VALUE, card.getPreferredSize().height));
 		return card;
 	}
 
-	private JPanel pluginRow(Binding b)
+	private static <T extends JComponent> T left(T c)
 	{
-		JPanel row = card();
-		JLabel name = new JLabel(b.plugin);
-		name.setForeground(Color.WHITE);
-
-		JButton remove = smallButton("x", "Remove");
-		remove.addActionListener(e -> plugin.removeBinding(b));
-
-		row.add(name, BorderLayout.NORTH);
-		row.add(keyRow(b, remove), BorderLayout.CENTER);
-		return capHeight(row);
+		c.setAlignmentX(LEFT_ALIGNMENT);
+		return c;
 	}
 
-	private JPanel groupRow(Group g)
+	private JPanel memberList(Group g)
 	{
-		JPanel row = card();
-		JLabel name = new JLabel(g.plugin);
-		name.setForeground(Color.WHITE);
+		JPanel middle = new JPanel(new BorderLayout(0, 4));
+		middle.setOpaque(false);
 
 		JPanel list = column();
 		if (g.plugins.isEmpty())
@@ -154,40 +227,26 @@ class TogglePanel extends PluginPanel
 			line.setOpaque(false);
 			JLabel l = new JLabel(member);
 			l.setForeground(Color.LIGHT_GRAY);
-			JButton x = smallButton("-", "Take out of the group");
-			x.addActionListener(e -> plugin.removeFromGroup(g, member));
 			line.add(l, BorderLayout.CENTER);
-			line.add(x, BorderLayout.EAST);
+			line.add(new IconButton(IconButton.Kind.MINUS, "Take out of the group",
+				() -> plugin.removeFromGroup(g, member)), BorderLayout.EAST);
 			list.add(line);
 		}
 
 		JButton addPlugins = new JButton("+ Add plugins");
 		addPlugins.setFocusable(false);
 		addPlugins.addActionListener(e -> plugin.promptAddToGroup(g));
-		JButton remove = smallButton("x", "Delete group");
-		remove.addActionListener(e -> plugin.removeGroup(g));
-
-		JPanel top = new JPanel(new BorderLayout());
-		top.setOpaque(false);
-		top.add(name, BorderLayout.CENTER);
-		top.add(remove, BorderLayout.EAST);
-
-		JPanel middle = new JPanel(new BorderLayout(0, 4));
-		middle.setOpaque(false);
-		middle.add(list, BorderLayout.NORTH);
 		JPanel addRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
 		addRow.setOpaque(false);
 		addRow.add(addPlugins);
-		middle.add(addRow, BorderLayout.CENTER);
 
-		row.add(top, BorderLayout.NORTH);
-		row.add(middle, BorderLayout.CENTER);
-		row.add(keyRow(g, null), BorderLayout.SOUTH);
-		return capHeight(row);
+		middle.add(list, BorderLayout.NORTH);
+		middle.add(addRow, BorderLayout.CENTER);
+		return middle;
 	}
 
-	/** The click-then-press key button, with an optional extra button beside it. */
-	private JPanel keyRow(Binding b, JButton extra)
+	/** The click-then-press key button, with a button beside it to toggle with the mouse. */
+	private JPanel keyRow(Binding b)
 	{
 		JButton key = new JButton(label(b.keybind()));
 		key.setToolTipText("Click, then press a key. Esc clears it.");
@@ -218,28 +277,30 @@ class TogglePanel extends PluginPanel
 			}
 		});
 
-		JPanel bottom = new JPanel(new BorderLayout(6, 0));
-		bottom.setOpaque(false);
-		bottom.add(key, BorderLayout.CENTER);
-		if (extra != null)
-		{
-			bottom.add(extra, BorderLayout.EAST);
-		}
-		return bottom;
+		// ON turns the plugin on and enables the key; OFF turns the plugin off and disables the key
+		SwitchToggle power = new SwitchToggle(!b.paused, on -> plugin.setEntryOn(b, on));
+		power.setToolTipText("<html>ON: turns it on, and its key works.<br>OFF: turns it off, and its key does nothing.</html>");
+
+		JPanel row = new JPanel(new BorderLayout(6, 0));
+		row.setOpaque(false);
+		row.add(key, BorderLayout.CENTER);
+		row.add(power, BorderLayout.EAST);
+		return row;
 	}
 
-	private static JButton smallButton(String text, String tip)
+	/** Whether the on/off state is kept after a restart or only for this session. */
+	private JPanel options(Binding b)
 	{
-		JButton b = new JButton(text);
-		b.setToolTipText(tip);
-		b.setFocusable(false);
-		b.setMargin(new java.awt.Insets(0, 6, 0, 6));
-		return b;
-	}
+		JComboBox<String> mode = new JComboBox<>(new String[]{REMEMBER, SESSION_ONLY});
+		mode.setSelectedItem(b.sessionOnly ? SESSION_ONLY : REMEMBER);
+		mode.setFocusable(false);
+		mode.setToolTipText("<html>" + REMEMBER + ": keeps its on/off state after a restart.<br>"
+			+ SESSION_ONLY + ": reverts after a restart.</html>");
+		mode.addActionListener(e -> plugin.setSessionOnly(b, SESSION_ONLY.equals(mode.getSelectedItem())));
 
-	private static JPanel capHeight(JPanel row)
-	{
-		row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
+		JPanel row = new JPanel(new BorderLayout());
+		row.setOpaque(false);
+		row.add(mode, BorderLayout.CENTER);
 		return row;
 	}
 

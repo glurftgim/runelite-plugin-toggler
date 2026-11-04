@@ -8,6 +8,13 @@ class Binding
 	String plugin;
 	int keyCode;
 	int modifiers;
+	/** A paused entry ignores its key. */
+	boolean paused;
+	/**
+	 * False (the default): the on/off state is saved in RuneLite, so it is the same next session.
+	 * True: the plugin is only started or stopped for this session and comes back as saved.
+	 */
+	boolean sessionOnly;
 
 	Binding(String plugin)
 	{

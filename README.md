@@ -28,6 +28,22 @@ The **Groups** tab turns several plugins on and off together with one key.
 
 Use **+ Add plugins** to add more, the small **-** to take one out, and **x** to delete the group.
 
+## Remembering across sessions
+
+Each entry has a setting for what happens to the plugin's on/off state:
+
+- **Remember across sessions** (the default): the plugin is switched on or off in RuneLite and kept that way. Turn
+  Entity Hider off with your key before a raid, log out, come back later, and it is still off.
+- **This session only:** the plugin is only stopped or started for now, and reverts to the way RuneLite has it saved
+  after a restart. A plugin that is switched off in the plugin list can't be turned on this way.
+
+## Each entry
+
+Every row has a coloured dot (green on, red off, amber when only some of a group are on) and a sliding **ON/OFF**
+switch. ON turns the plugin on and lets its key work. OFF turns the plugin off and makes its key do nothing, without
+deleting the entry. Small arrows reorder the rows. The **+** picker has a search box. **Export** and **Import** at the bottom of the panel copy your hotkeys and groups as text, to
+back them up or move them to another computer.
+
 ## Knowing what it did
 
 When you press a key, the plugin tells you what it turned on or off, so you're never guessing:

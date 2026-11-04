@@ -1,6 +1,8 @@
 package com.plugintoggler;
 
+import java.awt.AlphaComposite;
 import java.awt.Color;
+import java.awt.Composite;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
 import javax.inject.Inject;
@@ -23,8 +25,12 @@ class TogglePopupOverlay extends OverlayPanel
 	private final Client client;
 	private final PluginTogglerConfig config;
 
+	private static final long FADE_IN_MS = 180;
+	private static final long FADE_OUT_MS = 450;
+
 	private volatile String text;
 	private volatile boolean on;
+	private volatile long shownAt;
 	private volatile long hideAt;
 
 	@Inject
@@ -38,9 +44,24 @@ class TogglePopupOverlay extends OverlayPanel
 
 	void show(String message, boolean enabled)
 	{
+		long now = System.currentTimeMillis();
+		// a popup that is already up just changes its text; it doesn't fade in all over again
+		if (text == null || now >= hideAt)
+		{
+			shownAt = now;
+		}
 		text = message;
 		on = enabled;
-		hideAt = System.currentTimeMillis() + config.popupSeconds() * 1000L;
+		hideAt = now + Math.max(config.popupSeconds() * 1000L, FADE_IN_MS + FADE_OUT_MS);
+	}
+
+	/** 0 to 1: eases in over the first moments and out over the last. */
+	private float opacity(long now)
+	{
+		float in = Math.min(1f, (now - shownAt) / (float) FADE_IN_MS);
+		float out = Math.min(1f, (hideAt - now) / (float) FADE_OUT_MS);
+		float t = Math.max(0f, Math.min(in, out));
+		return t * t * (3f - 2f * t);
 	}
 
 	@Override
@@ -51,8 +72,9 @@ class TogglePopupOverlay extends OverlayPanel
 			return null;
 		}
 
+		long now = System.currentTimeMillis();
 		String shown = text;
-		boolean live = shown != null && System.currentTimeMillis() < hideAt;
+		boolean live = shown != null && now < hideAt;
 		boolean sample = !live && client.isKeyPressed(KeyCode.KC_ALT);
 		if (!live && !sample)
 		{
@@ -63,6 +85,16 @@ class TogglePopupOverlay extends OverlayPanel
 			.text(sample ? "Plugin Toggler (drag me)" : shown)
 			.color(sample ? Color.WHITE : on ? ON : OFF)
 			.build());
-		return super.render(graphics);
+
+		Composite before = graphics.getComposite();
+		graphics.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, sample ? 1f : opacity(now)));
+		try
+		{
+			return super.render(graphics);
+		}
+		finally
+		{
+			graphics.setComposite(before);
+		}
 	}
 }
