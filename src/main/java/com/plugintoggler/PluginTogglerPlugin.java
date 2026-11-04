@@ -45,7 +45,9 @@ public class PluginTogglerPlugin extends Plugin
 	private static final String CONFIG_GROUP = "plugintoggler";
 	private static final String BINDINGS_KEY = "bindings";
 	private static final String GROUPS_KEY = "groups";
-	private static final Gson GSON = new Gson();
+
+	@Inject
+	private Gson gson;
 
 	@Inject
 	private KeyManager keyManager;
@@ -240,8 +242,8 @@ public class PluginTogglerPlugin extends Plugin
 
 	void saveAll()
 	{
-		configManager.setConfiguration(CONFIG_GROUP, BINDINGS_KEY, GSON.toJson(bindings));
-		configManager.setConfiguration(CONFIG_GROUP, GROUPS_KEY, GSON.toJson(groups));
+		configManager.setConfiguration(CONFIG_GROUP, BINDINGS_KEY, gson.toJson(bindings));
+		configManager.setConfiguration(CONFIG_GROUP, GROUPS_KEY, gson.toJson(groups));
 	}
 
 	private void load()
@@ -253,7 +255,7 @@ public class PluginTogglerPlugin extends Plugin
 			String json = configManager.getConfiguration(CONFIG_GROUP, BINDINGS_KEY);
 			if (json != null && !json.isEmpty())
 			{
-				List<Binding> loaded = GSON.fromJson(json, new TypeToken<List<Binding>>()
+				List<Binding> loaded = gson.fromJson(json, new TypeToken<List<Binding>>()
 				{
 				}.getType());
 				if (loaded != null)
@@ -264,7 +266,7 @@ public class PluginTogglerPlugin extends Plugin
 			json = configManager.getConfiguration(CONFIG_GROUP, GROUPS_KEY);
 			if (json != null && !json.isEmpty())
 			{
-				List<Group> loaded = GSON.fromJson(json, new TypeToken<List<Group>>()
+				List<Group> loaded = gson.fromJson(json, new TypeToken<List<Group>>()
 				{
 				}.getType());
 				if (loaded != null)
